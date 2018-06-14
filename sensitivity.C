@@ -109,18 +109,22 @@ double get_background(double logE /*GeV*/,double dlE /*GeV*/,TH1F* hRate,TH1F* h
 //
 //Estimate a signal in a logE bin
 //
-double get_signal(double logE /*GeV*/,double dlE /*GeV*/, TH1F* hRate, double T = 1) {
+double get_signal(double logE /*GeV*/,double dlE /*GeV*/, TH1F* hRate, double T = 1, bool correctForPSF = true) {
   int iE = hRate->FindBin(logE);
   int iStart = hRate->FindBin(logE-(dlE/2));
   int iStop = hRate->FindBin(logE + (dlE/2));
   double dEtrue = pow(10,logE + (dlE/2)) - pow(10,logE - (dlE/2));
   double dEbin = pow(10,hRate->GetXaxis()->GetBinUpEdge(iStop)) - pow(10,hRate->GetXaxis()->GetBinLowEdge(iStart));
   double corrFactor = dEtrue/dEbin; //few percent correction factor to account for mismatch in binning
+  
+  if (correctForPSF) corrFactor *= 0.68;
+  
   double sum = 0;
   for (int i = iStart; i <=iStop; i++) {
     double dE =  pow(10,hRate->GetXaxis()->GetBinUpEdge(i)) - pow(10,hRate->GetXaxis()->GetBinLowEdge(i));
     double rate = hRate->GetBinContent(i);
-    sum += rate  * dE * T * 0.68; // 0.68 for using the PSF
+    
+    sum += rate  * dE * T; // 0.68 for using the PSF
   }
   return sum*corrFactor;
 }
@@ -201,7 +205,7 @@ TGraph* hist_to_graph(TH1F* h) {
 //
 //Calculate the differential sensitivity for different arrays.
 //
-TH1F* diff_sens(TF1* fRefSpec, TString sDet = "hawc", double period = YEAR, double frac_per_day = 0.25, double scalePSF = 1, double scaleBKG = 1, double scaleArea = 1, double sourceSize = 0 ){
+TH1F* diff_sens(TF1* fRefSpec, TString sDet = "hawc", double period = YEAR, double frac_per_day = 0.25, double scalePSF = 1, double scaleBKG = 1, double scaleArea = 1, double sourceSize = 0, double nsigma = 5){
   if (gPerFile == NULL) open_file();
   
   TH1F* hDiff = new TH1F("",";log_{10} (E_{#gamma '} / GeV);E_{#gamma '}^{2} #times #Phi_{ref} (ergs cm^{-2} s^{-1})",5*5-3,1,5.4);
@@ -252,10 +256,11 @@ TH1F* diff_sens(TF1* fRefSpec, TString sDet = "hawc", double period = YEAR, doub
     double logE = hDiff->GetBinCenter(i);
     double dE = hDiff->GetXaxis()->GetBinWidth(2);
     double bkg = get_background(logE,dE,hRateCR,hRes,T,scaleBKG,scalePSF,sourceSize);
-    double sig = get_signal(logE,dE,hRateGam,T);
+    bool psfCor = !(sourceSize > 0);
+    double sig = get_signal(logE,dE,hRateGam,T,psfCor);
     double Eergs = pow(10,logE-3)*TeV2Ergs;
     //rescale ref flux
-    double nsig = sqrt(bkg) * 5;//5 sigma above background
+    double nsig = sqrt(bkg) * nsigma;//5 sigma above background
     if (nsig < 10) nsig = 10;//minimal 10 photons per bin
     double ratio = nsig/sig;
     double F = fRefSpec->Eval(pow(10,logE-3)) * ratio;
@@ -373,6 +378,7 @@ double norm_integral_flux(TF1* fRefSpec, TString sDet, double period, double fra
       double dE = hSens->GetXaxis()->GetBinWidth(2);
       double bkg = get_background(logE,dE,hRateCR,hRes,T,scaleBKG,scalePSF,sourceSize);
       sumBkg += bkg;
+      bool psfCor = !(sourceSize > 0);
       double sig = norm * get_signal(logE,dE,hRateGam,T);
       sumSig += sig;
       double Pbkg = TMath::Poisson(bkg,bkg);
@@ -441,6 +447,8 @@ void diff_sens_figure() {
   TGraph* gSGSO = hist_to_graph(hSGSO);
   gSGSO->SetLineColor(kRed+2);
   gSGSO->Draw("SAMEL");
+  
+  
   //5 years of SGSO
   TH1F* hSGSO_5yr=  diff_sens(fCrab,"sgso",5 * YEAR,6.*HOUR/DAY,rPSF,rBKG,rA);
   TGraph* gSGSO_5yr = hist_to_graph(hSGSO_5yr);
@@ -512,11 +520,89 @@ void pl_detect_figure() {
 }
 
 //
+// Estimates the surface brightness needed for a 3 sigma
+// differential detection.
+// for a dirty estimation of fermi-bubbles
+void large_source_figure(int ndeg = 10) {
+  cout << "\n Large source figure (approximation for FermiBubble)..." << endl;
+  TCanvas* cLarge = new TCanvas();
+  cLarge->SetLogy();
+  cLarge->SetGrid();
+  double rA = 1;
+  double rPSF = 0.75;
+  double rBKG = 0.5;
+  TF1* fCrab = new TF1("fCrab","[0]*pow(x/[2],-[1])");
+  fCrab->SetParameter(0,3.2e-7); //m^2 s^-1 TeV^-1
+  fCrab->SetParameter(1,2.5);// m^2 s^-1 TeV^-1
+  fCrab->SetParameter(2,1); // in TeV
+  
+  double color = 51;
+  double dc = 49./ndeg;
+  for (int i = 1; i <= ndeg; i++ ) {
+    double sourceRadius = 2*i;
+    
+    //Only using the inner part
+    TH1F* hSGSO10deg = diff_sens(fCrab,"sgso_i",5*YEAR,6.*HOUR/DAY,rPSF,rBKG,rA,sourceRadius,3.);
+    TGraph* gSGSO10deg = hist_to_graph(hSGSO10deg);
+    
+    double solid_angle = 2 * TMath::Pi() * (1 - cos(sourceRadius * TMath::DegToRad()));
+    gSGSO10deg->GetYaxis()->SetTitle("[GeV cm^{-2} s^{-1} sr^{-1}]");
+    for (int j = 0; j < gSGSO10deg->GetN(); j++ ) {
+      gSGSO10deg->GetY()[j] *= 1.e3/(solid_angle * TeV2Ergs);
+      //fermi bubbles have roughly 20 degrees radius
+      if (sourceRadius == 20)
+        cout << pow(10,gSGSO10deg->GetX()[j])  << ", " << gSGSO10deg->GetY()[j] << endl;
+    }
+    gSGSO10deg->SetLineColor(color);
+    gSGSO10deg->SetMinimum(1e-9);
+    gSGSO10deg->SetMaximum(2e-6);
+    if (i == 1) {
+      gSGSO10deg->DrawClone("AL");
+    } else {
+      gSGSO10deg->DrawClone("SAMEL");
+    }
+    color += dc;
+  }
+}
+
+// TeV emission from CR interaction with nearby clouds.
+// Print the rescaling needed of the typical flux that would lead to
+// a 5 sigma detection.
+//clouds spectra from https://arxiv.org/pdf/1112.5541.pdf
+void clouds() {
+  cout << "\nCloud estimation..." << endl;
+  TF1* fPowerLaw = new TF1("fPowerLaw","[0]*pow(x/[2],-[1])",200,1e6);
+  
+  //norm at 10 GeV
+  double norm = 1e-3; // in (TeV m2 s-1)
+  double refEnergy = 1e-2; // in GeVs
+  
+  //index
+  double index = 2.7;
+  //
+  fPowerLaw->SetParameter(0,norm);//m^2 s^-1 TeV^-1
+  fPowerLaw->SetParameter(1,index);
+  fPowerLaw->SetParameter(2,refEnergy);//TeV
+  
+  //typical source radius of the clouds
+  double sourceRadius = 5;
+  double rPSF = 1;
+  double rBKG = 0.5;
+  
+  double normI = norm_integral_flux(fPowerLaw,"sgso",5*YEAR,6.*HOUR/DAY,rPSF,rBKG,1,sourceRadius);
+  cout << "Flux needs to be  " << normI
+  << " times higher than typical flux for 5sigma detection" << endl;
+  
+}
+
+//
 // Function to get figures
 //
 void sensitivity() {
   diff_sens_figure();
   pl_detect_figure();
+  large_source_figure();
+  clouds();
 }
 
 
