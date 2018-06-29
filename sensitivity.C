@@ -70,7 +70,7 @@ TH1F* get_array_rate(TH2F* hEtrueEreco, TH1F* hArea,TF1* fSpec,TString sTitle = 
     }
     hReco->Scale(1./hReco->GetEntries());//normalize
     double dE = pow(10,trueAxis->GetBinUpEdge(iy)) - pow(10,trueAxis->GetBinLowEdge(iy));
-//    cout << Etrue * 1e-3 << "\t" <<fSpec->Eval(Etrue * 1e-3) << endl;
+    //    cout << Etrue * 1e-3 << "\t" <<fSpec->Eval(Etrue * 1e-3) << endl;
     double F = fSpec->Eval(Etrue*1e-3) * dE * hArea->GetBinContent(hArea->FindBin(trueAxis->GetBinCenter(iy)));
     F *= 1e-3; // histrograms are stored in GeV.
     TAxis* recoAxis = hRate->GetXaxis();
@@ -269,12 +269,12 @@ TH1F* diff_sens(TF1* fRefSpec, TString sDet = "hawc", double period = YEAR, doub
     
     double ds = Eergs * Eergs * F;
     if (bkg != 0) {
-//      cout  <<  std::scientific << setprecision(3) <<
-//      std::setw(10)  << logE <<
-//      std::setw(10) << " bkg: " << bkg <<
-//      std::setw(10) << "nsig " <<nsig <<
-//      std::setw(10) << " sig " << sig <<
-//      std::setw(10) << " F " << F <<  endl;
+      //      cout  <<  std::scientific << setprecision(3) <<
+      //      std::setw(10)  << logE <<
+      //      std::setw(10) << " bkg: " << bkg <<
+      //      std::setw(10) << "nsig " <<nsig <<
+      //      std::setw(10) << " sig " << sig <<
+      //      std::setw(10) << " F " << F <<  endl;
       hDiff->SetBinContent(i,ds);
     }
   }
@@ -358,7 +358,7 @@ double norm_integral_flux(TF1* fRefSpec, TString sDet, double period, double fra
   double prevScaleDown = scaleDown;
   // iteration counter, in case we do not converge...
   int iterations = 0;
-  while ( TMath::Abs(TS - 25) > 1 && iterations < 100) {
+  while ( TMath::Abs(TS - 25) > 1 && iterations < 500) {
     //Setting stepsizes in flux norm
     if (TS < 25) {
       norm = prev_norm;
@@ -394,7 +394,7 @@ double norm_integral_flux(TF1* fRefSpec, TString sDet, double period, double fra
     iterations++;
   }//end loop
   
-  if (iterations == 100) {
+  if (iterations == 500) {
     cout << "WARNING: couldn't find 5-sigma limit" << endl;
   }
   delete hSens;
@@ -419,7 +419,7 @@ void diff_sens_figure() {
   double rA = 1;
   //
   TH1F* hSimHAWC = diff_sens(fCrab,"hawc",507*DAY,6.*HOUR/DAY,rPSF,rBKG,rA);
-
+  
   //setting up the canvas
   TCanvas* cDiff = new TCanvas();
   cDiff->SetLogy();
@@ -469,7 +469,7 @@ void pl_detect_figure() {
   fPowerLaw->SetParameter(0,3.2e-7);//m^2 s^-1 TeV^-1
   fPowerLaw->SetParameter(1,2.5);
   fPowerLaw->SetParameter(2,1);//TeV
-
+  
   double rA = 1;
   double rPSF = 0.75;
   double rBKG = 0.5;
@@ -488,13 +488,13 @@ void pl_detect_figure() {
     fPowerLaw->SetParameter(0,crabNorm);
     fPowerLaw->SetParameter(1,specIndex);
     double normI =norm_integral_flux(fPowerLaw,"sgso",1*YEAR,6.*HOUR/DAY,rPSF,rBKG,rA);
-//    cout << i << "\t" << specIndex  << "\t" <<  normI * crabNorm << "\t" <<  normI << "\t" << color <<endl;
+    //    cout << i << "\t" << specIndex  << "\t" <<  normI * crabNorm << "\t" <<  normI << "\t" << color <<endl;
     fPowerLaw->SetParameter(0,crabNorm * normI);
     g = new TGraph();
     double dx = 0.05;
     for (int j = 0; j < 80; j++) {
       double E = pow(10,-1+j*dx);//E in TeV
-      //Xaxis in GeV / Yaxis in ergs cm-2 s-1.
+                                 //Xaxis in GeV / Yaxis in ergs cm-2 s-1.
       g->SetPoint(j,log10(E)+3,TeV2Ergs * pow(E,2)/1e4 * fPowerLaw->Eval(E));
     }
     g->SetLineColor(color);
@@ -595,14 +595,109 @@ void clouds() {
   
 }
 
+
+void duration_detectability() {
+  //
+  //integral power law sensitivity figure
+  //
+  
+  TF1* fPowerLaw = new TF1("fPowerLaw","[0]*pow(x/[2],-[1])",200,1e6);
+  double crabNorm = 3.2e-7;
+  fPowerLaw->SetParameter(0,3.2e-7);//m^2 s^-1 TeV^-1
+  fPowerLaw->SetParameter(1,2.5);
+  fPowerLaw->SetParameter(2,1);//TeV
+  
+  double rA = 1;
+  double rPSF = 0.75;
+  double rBKG = 0.5;
+  
+  TCanvas* can1 = new TCanvas("can1","can1",500,450);
+  can1->SetGrid();
+  can1->SetTicks();
+  can1->SetLogy();
+  can1->SetLogx();
+  can1->SetRightMargin(0.1);
+  
+  const int nDur = 20;
+  double dDur = 6./nDur;
+  
+  TGraph* g;
+  double color = 51;
+  double dc = 48./4;
+  double specIndex = 2.0;
+  for (int iSpec = 0; iSpec < 5; iSpec++) {
+    double duration = 0;
+    fPowerLaw->SetParameter(0,crabNorm);
+    fPowerLaw->SetParameter(1,specIndex);
+    g = new TGraph();
+    for (int i =0; i < nDur; i++) {
+      
+      double normI =norm_integral_flux(fPowerLaw,"sgso",pow(10,duration),1,rPSF,rBKG,rA);
+      
+      g->SetPoint(i,pow(10,duration),normI*fPowerLaw->Eval(0.1));
+      duration += dDur;
+    }
+    
+    g->SetLineColorAlpha(color,0.5);
+    g->SetLineWidth(4);
+    if (iSpec==0) {
+      g->SetMinimum(1e-6);
+      g->SetMaximum(1e-2);
+      g->GetXaxis()->SetLabelSize(0.05);
+      g->GetYaxis()->SetLabelSize(0.05);
+      g->GetXaxis()->SetTitleSize(0.05);
+      g->GetXaxis()->SetTitleOffset(1.35);
+      g->GetYaxis()->SetTitleSize(0.05);
+      g->GetYaxis()->SetTitleOffset(1.35);
+      g->GetYaxis()->SetTitle("#phi(100 GeV) [m^{2} s^{-1} TeV^{-1}]");
+      g->GetXaxis()->SetTitle("duration [s]");
+      g->DrawClone("AL");
+    } else {
+      g->DrawClone("SAMEL");
+    }
+    specIndex += 0.5;
+    color += dc;
+  }
+  
+  
+  //PKS 2155-304
+  cout << "PKS2155 detected in ";
+  TF1* fSpectrumCut = new TF1("PKS2155Cut","2.06e-6*TMath::Min(pow(x,-2.71),pow(0.43,0.82)*pow(x,-3.53))*(0.5+TMath::Sign(0.5,5.0-x))",0.2,1.0e3);
+  for (int i = 10; i < 500; i++) {
+    double norm = norm_integral_flux(fSpectrumCut,"sgso",i,1,rPSF,rBKG,rA);
+    if (norm < 1) {
+      cout << i << " seconds,  flux at 100 GeV is " << fSpectrumCut->Eval(0.1) << " [m2 TeV s]^1"  << endl;
+      break;
+    }
+  }
+
+  //fCrab
+  fPowerLaw->SetParameter(0,crabNorm);//m^2 s^-1 TeV^-1
+  fPowerLaw->SetParameter(1,2.5);
+  fPowerLaw->SetParameter(2,1);//TeV
+  cout << "Crab detected in ";
+  for (int i = 540; i < 1000; i++) {
+    double norm = norm_integral_flux(fPowerLaw,"sgso",i,1,rPSF,rBKG,rA);
+    if (norm < 1) {
+      cout << i << " seconds,  flux at 100 GeV is " << fPowerLaw->Eval(0.1) << " [m2 TeV s]^1"  << endl;
+      break;
+    }
+  }
+
+  
+}
+
 //
 // Function to get figures
 //
 void sensitivity() {
+  open_file();
   diff_sens_figure();
   pl_detect_figure();
   large_source_figure();
   clouds();
+  duration_detectability();
+  
 }
 
 
