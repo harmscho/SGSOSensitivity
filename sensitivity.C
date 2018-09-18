@@ -281,6 +281,133 @@ TH1F* diff_sens(TF1* fRefSpec, TString sDet = "hawc", double period = YEAR, doub
   return hDiff;
 }
 
+
+//likelihood only works for SGSO. Combines innner and outer array
+TH1F* diff_sens_lh(TF1* fRefSpec, TString sDet = "sgso", double period = YEAR, double frac_per_day = 0.25, double scalePSF = 1, double scaleBKG = 1, double scaleArea = 1, double sourceSize = 0, double nsigma = 5){
+  if (gPerFile == NULL) open_file();
+  
+  TH1F* hDiff = new TH1F("",";log_{10} (E_{#gamma '} / GeV);E_{#gamma '}^{2} #times #Phi_{ref} (ergs cm^{-2} s^{-1})",5*5-3,1,5.4);
+  double T = period * frac_per_day; //six hours per day
+  TH2F* hDisp_g = NULL;
+  TH2F* hDisp_p = NULL;
+  TH1F* hArea_g = NULL;
+  TH1F* hArea_p = NULL;
+  TH1F* hRes = NULL;
+
+  if (sDet != "sgso"){
+    cout << "Only works for comnbination of inner and outer (sgso), not for detector: "<< sDet << endl;
+    return NULL;
+  }
+  
+  ///CR rate: 0.096 (E/TeV)^{-2.7} TeV^{-1} s^{-1} m^{-2} sr^-1
+  TF1* fCR = new TF1("fCR","[0]*pow(x/[2],-[1])");
+  fCR->SetParameter(0,0.096);
+  fCR->SetParameter(1,2.7);
+  fCR->SetParameter(2,1);//working in TeV
+  TH1F* hRateCR = NULL;
+  TH1F* hRateGam = NULL;
+  
+  for (int i = 1; i <= hDiff->GetNbinsX();i++) {
+    double logE = hDiff->GetBinCenter(i);
+    double dE = hDiff->GetXaxis()->GetBinWidth(2);
+    bool psfCor = !(sourceSize > 0);
+    double Eergs = pow(10,logE-3)*TeV2Ergs;
+    //rescale ref flux
+    
+    double norm = 1000;
+    double sumSig = 0;
+    //combined sensitivity
+    
+    //signal outer
+    hDisp_g = hEtrueErec_sgso_o_g;
+    hDisp_p = hEtrueErec_sgso_o_p;
+    hArea_g = (TH1F*)hArea_sgso_o_g->Clone();
+    hArea_p = (TH1F*)hArea_sgso_o_p->Clone();
+    hRes = hRes_sgso_o_g;
+    hRateCR = get_array_rate(hDisp_p,hArea_p,fCR,"hRateCR");
+    hRateGam = get_array_rate(hDisp_g,hArea_g,fRefSpec,"hRefRate");
+    double sig_out = get_signal(logE,dE,hRateGam,T,psfCor);
+    double bkg_out = get_background(logE,dE,hRateCR,hRes,T,scaleBKG,scalePSF,sourceSize);
+      
+    //signal inner
+    hDisp_g = hEtrueErec_sgso_i_g;
+    hDisp_p = hEtrueErec_sgso_i_p;
+    hArea_g = (TH1F*)hArea_sgso_i_g->Clone();
+    hArea_p = (TH1F*)hArea_sgso_i_p->Clone();
+    hRes = hRes_sgso_i_g;
+    hRateCR = get_array_rate(hDisp_p,hArea_p,fCR,"hRateCR");
+    hRateGam = get_array_rate(hDisp_g,hArea_g,fRefSpec,"hRefRate");
+    double sig_in = get_signal(logE,dE,hRateGam,T,psfCor);
+    double bkg_in = get_background(logE,dE,hRateCR,hRes,T,scaleBKG,scalePSF,sourceSize);
+    
+    //calculate the normalisation needed of reference spectrum
+    //that results in a 5 sigma detection
+    norm = 1000;
+    double prev_norm = 10 * norm;
+    double TS = 1e3;
+    double scaleDown = 0.5;
+    double prevScaleDown = scaleDown;
+    // iteration counter, in case we do not converge...
+    int iterations = 0;
+    sumSig = 0;
+    while ( TMath::Abs(TS - nsigma*nsigma) > 1 && iterations < 500) {
+      //Setting stepsizes in flux norm
+      if (TS < nsigma*nsigma) {
+        norm = prev_norm;
+        scaleDown = prevScaleDown/2;
+      }
+      prev_norm = norm;
+      prevScaleDown = scaleDown;
+      norm *= (1.-scaleDown);
+      // likelihood calculation
+      double Lbkg = 0;
+      double Lsig = 0;
+      
+      double Pbkg_in = TMath::Poisson(bkg_in,bkg_in);
+      double Psig_in = TMath::Poisson(norm*sig_in + bkg_in,bkg_in);
+      if (norm*sig_in != 0 && bkg_in != 0) {
+        if (Pbkg_in < 1e-20) Pbkg_in = 1e-20;
+        if (Psig_in < 1e-20) Psig_in = 1e-20;
+        Lbkg += -log(Pbkg_in);
+        Lsig += -log(Psig_in);
+      }
+      
+      double Pbkg_out = TMath::Poisson(bkg_out,bkg_out);
+      double Psig_out = TMath::Poisson(norm*sig_out + bkg_out,bkg_out);
+      if (norm*sig_out != 0 && bkg_out != 0) {
+        if (Pbkg_out < 1e-20) Pbkg_out = 1e-20;
+        if (Psig_out < 1e-20) Psig_out = 1e-20;
+        Lbkg += -log(Pbkg_out);
+        Lsig += -log(Psig_out);
+      }
+      sumSig = norm*sig_out + norm*sig_in;
+      TS = 2 * (Lsig - Lbkg);
+      iterations++;
+    }//end loop
+    
+    if (sumSig < 10) norm *= 10./sumSig;
+    
+    double F = fRefSpec->Eval(pow(10,logE-3)) * norm;
+    F /= TeV2Ergs;//in ergs
+    F /= 1e4;//to cm2
+    
+    double ds = Eergs * Eergs * F;
+    if (bkg_in+bkg_out != 0) {
+      //      cout  <<  std::scientific << setprecision(3) <<
+      //      std::setw(10)  << logE <<
+      //      std::setw(10) << " bkg: " << bkg <<
+      //      std::setw(10) << "nsig " <<nsig <<
+      //      std::setw(10) << " sig " << sig <<
+      //      std::setw(10) << " F " << F <<  endl;
+      hDiff->SetBinContent(i,ds);
+    }
+  }
+  return hDiff;
+}
+
+
+
+
 //
 // function declaration
 //
@@ -404,6 +531,9 @@ double norm_integral_flux(TF1* fRefSpec, TString sDet, double period, double fra
 //
 //Make Differential Sensitivity Figure
 //
+//
+//Make Differential Sensitivity Figure
+//
 void diff_sens_figure() {
   
   //Taking a simple power-law crab spectrum as a reference source
@@ -432,29 +562,90 @@ void diff_sens_figure() {
   gCTA->GetXaxis()->SetTitleSize(0.05);
   gCTA->GetYaxis()->SetTitleSize(0.05);
   gCTA->GetYaxis()->SetTitleOffset(1.20);
-  gCTA->GetXaxis()->SetTitle("log_{10} (E_{#gamma '} / GeV)");
-  gCTA->GetYaxis()->SetTitle("E_{#gamma '}^{2} #times #Phi_{ref} [ergs cm^{-2} s^{-1}]");
+  gCTA->GetXaxis()->SetTitle("log_{10} (E_{ r} / GeV)");
+  gCTA->GetYaxis()->SetTitle("E^{2}#times Flux Sens. [ergs cm^{-2} s^{-1}]");
   gCTA->SetMinimum(1e-14);
   gCTA->SetMaximum(1e-10);
   gCTA->Draw("AL");
   
   //Asume a factor 0.5 less hadrons, and 0.75 in point spread function for SGSO
   rA = 1;
-  rPSF = 0.75;
+  rPSF = 1;
   rBKG = 0.5;
+  
   //1 year of SGSO
-  TH1F* hSGSO= diff_sens(fCrab,"sgso",YEAR,6.*HOUR/DAY,rPSF,rBKG,rA);
+  TH1F* hSGSO = diff_sens_lh(fCrab,"sgso",YEAR,6.*HOUR/DAY,1,rBKG,rA);
   TGraph* gSGSO = hist_to_graph(hSGSO);
   gSGSO->SetLineColor(kRed+2);
-  gSGSO->Draw("SAMEL");
+  //  gSGSO->Draw("SAMEL");
+  
+  //  TH1F* hSGSO_lh = diff_sens_lh(fCrab,"sgso_c",YEAR,6.*HOUR/DAY,1,rBKG,rA);
+  //  TGraph* gSGSO_lh = hist_to_graph(hSGSO_lh);
   
   
+  //convervative
+  TH1F* hSGSO_con= diff_sens_lh(fCrab,"sgso",YEAR,6.*HOUR/DAY,1,1,rA);
+  TGraph* gSGSO_con = hist_to_graph(hSGSO_con);
+  gSGSO_con->SetLineColor(kRed+3);
+  //  gSGSO_con->Draw("SAMEL");
+  
+  //optimistic
+  TH1F* hSGSO_opt= diff_sens_lh(fCrab,"sgso",YEAR,6.*HOUR/DAY,0.8,0.5,rA);
+  TGraph* gSGSO_opt = hist_to_graph(hSGSO_opt);
+  gSGSO_opt->SetLineColor(kRed);
+  
+  
+  TGraphAsymmErrors* gr_1year = new TGraphAsymmErrors();
+  for (int i = 0; i < gSGSO_opt->GetN(); i++) {
+    gr_1year->SetPoint(i,gSGSO->GetX()[i],gSGSO->GetY()[i]);
+    gr_1year->SetPointEYhigh(i,gSGSO_con->GetY()[i]-gSGSO->GetY()[i]);
+    gr_1year->SetPointEYlow(i,gSGSO->GetY()[i] - gSGSO_opt->GetY()[i]);
+  }
+  gr_1year->SetFillColorAlpha(2,0.4);
+  gr_1year->Draw("same 4");
+  gSGSO_opt->Draw("SAMEL");
+  gSGSO_con->SetLineColor(2);
+  gSGSO_con->Draw("SAMEL");
+  //  gSGSO_lh->Draw("samel");
+  
+  cout << "\n\n...5 year scenario... " << endl;
+  cout << "...Middle... " << endl;
   //5 years of SGSO
-  TH1F* hSGSO_5yr=  diff_sens(fCrab,"sgso",5 * YEAR,6.*HOUR/DAY,rPSF,rBKG,rA);
+  TH1F* hSGSO_5yr = diff_sens_lh(fCrab,"sgso",5 * YEAR,6.*HOUR/DAY,rPSF,rBKG,rA);
   TGraph* gSGSO_5yr = hist_to_graph(hSGSO_5yr);
   gSGSO_5yr->SetLineColor(kRed+2);
   gSGSO_5yr->SetLineStyle(2);
-  gSGSO_5yr->Draw("same L");
+  //  gSGSO_5yr->Draw("same L");
+  
+  //convervative
+  cout << "...convervative... " << endl;
+  TH1F* hSGSO_5yr_cons=  diff_sens_lh(fCrab,"sgso",5 * YEAR,6.*HOUR/DAY,1,1,rA);
+  TGraph* gSGSO_5yr_cons = hist_to_graph(hSGSO_5yr_cons);
+  gSGSO_5yr_cons->SetLineColor(kRed+3);
+  //  gSGSO_5yr_cons->SetLineStyle(2);
+  //  gSGSO_5yr_cons->Draw("same L");
+  cout << "...best ... " << endl;
+  TH1F* hSGSO_5yr_opt= diff_sens_lh(fCrab,"sgso",5*YEAR,6.*HOUR/DAY,0.8,0.5,rA);
+  TGraph* gSGSO_5yr_opt = hist_to_graph(hSGSO_5yr_opt);
+  //  gSGSO_5yr_opt->SetLineStyle(2);
+  //  gSGSO_5yr_opt->SetLineColor(kRed);
+  //  gSGSO_5yr_opt->Draw("SAMEL");
+  
+  
+  TGraphAsymmErrors* gr_5year = new TGraphAsymmErrors();
+  for (int i = 0; i < gSGSO_5yr->GetN(); i++) {
+    gr_5year->SetPoint(i,gSGSO_5yr->GetX()[i],gSGSO_5yr->GetY()[i]);
+    gr_5year->SetPointEYhigh(i,gSGSO_5yr_cons->GetY()[i]-gSGSO_5yr->GetY()[i]);
+    gr_5year->SetPointEYlow(i,gSGSO_5yr->GetY()[i] - gSGSO_5yr_opt->GetY()[i]);
+  }
+  gr_5year->SetFillColorAlpha(kRed+3,0.4);
+  gr_5year->Draw("same 4");
+  gSGSO_5yr_opt->SetLineColor(kRed+3);
+  gSGSO_5yr_opt->Draw("SAMEL");
+  gSGSO_5yr_cons->SetLineColor(kRed+3);
+  gSGSO_5yr_cons->Draw("SAMEL");
+  
+  
   // the published sensitivity from HAWC-crab paper
   TGraph* gHAWCCrab = diff_sens_hawc();
   gHAWCCrab->Draw("same L");
@@ -693,10 +884,10 @@ void duration_detectability() {
 void sensitivity() {
   open_file();
   diff_sens_figure();
-  pl_detect_figure();
+  /*pl_detect_figure();
   large_source_figure();
   clouds();
-  duration_detectability();
+  duration_detectability();*/
   
 }
 
